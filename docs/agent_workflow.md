@@ -87,6 +87,83 @@ input *is* Agent 1's output. No delegation, no loops.
 
 ---
 
+## CrewAI definitions (Agent · Task · Crew)
+
+The canonical CrewAI setup, as defined in `crew_agents.py`
+(`build_agents()` / `build_crew()`):
+
+```python
+from crewai import Agent, Task, Crew, Process, LLM
+
+# Shared LLM (any provider via LiteLLM), with temperature control.
+llm = LLM(model="gemini/gemini-3.5-flash-lite", temperature=0.3)
+
+# --- Agents -------------------------------------------------------------
+data_analyst = Agent(
+    role="Senior Hotel Data Analyst",
+    goal="Analyze weekly ML occupancy forecasts and identify operational "
+         "risks or opportunities.",
+    backstory="You are an expert at translating raw machine learning "
+              "probabilities into plain English business insights.",
+    llm=llm,
+    verbose=True,
+    allow_delegation=False,
+)
+
+revenue_manager = Agent(
+    role="Director of Revenue Management",
+    goal="Maximize revenue by adjusting pricing and overbooking strategies "
+         "based on data.",
+    backstory="You are a ruthless optimizer. You take data analyst reports "
+              "and create concrete pricing actions.",
+    llm=llm,
+    verbose=True,
+    allow_delegation=False,
+)
+
+# --- Tasks --------------------------------------------------------------
+analysis_task = Task(
+    description=f"Here is this week's ML-generated hotel booking forecast:\n\n"
+                f"{forecast_context}\n\n"
+                "Analyze it. Identify the key operational risks (e.g. high "
+                "cancellation exposure, low occupancy) and opportunities "
+                "(e.g. upsell potential, pricing headroom). Be specific and "
+                "reference the numbers.",
+    expected_output="A concise bullet-point briefing (5-8 bullets) of the most "
+                    "important operational risks and opportunities, each tied "
+                    "to a figure from the forecast.",
+    agent=data_analyst,
+)
+
+strategy_task = Task(
+    description="Using the analyst's briefing, create a concrete action plan "
+                "to maximize revenue this week. Cover pricing moves "
+                "(raise/hold/discount and by roughly how much), overbooking "
+                "levels given the cancellation forecast, and any targeted "
+                "upsell pushes.",
+    expected_output="A numbered action plan (4-6 items). Each item states a "
+                    "specific move, the trigger from the data, and the expected "
+                    "revenue impact.",
+    agent=revenue_manager,
+    context=[analysis_task],   # <-- receives the analyst's output
+)
+
+# --- Crew ---------------------------------------------------------------
+crew = Crew(
+    agents=[data_analyst, revenue_manager],
+    tasks=[analysis_task, strategy_task],
+    process=Process.sequential,   # analyst runs first, then revenue manager
+    verbose=True,
+)
+
+result = crew.kickoff()   # -> final revenue action plan
+```
+
+- **2 Agents** — Data Analyst and Revenue Manager (no delegation).
+- **2 Tasks** — `analysis_task` (analyst) and `strategy_task` (revenue manager);
+  `strategy_task.context=[analysis_task]` passes the analyst's output forward.
+- **1 Crew** — sequential process, so the tasks run in order.
+
 ## Data contract — the forecast summary
 
 `summarize_forecast()` runs the models over a sample of bookings and emits text
