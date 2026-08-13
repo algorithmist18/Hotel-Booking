@@ -24,32 +24,42 @@ model-inspection tab.
 
 ```
 Hotel-Booking/
-├── app.py                  # Streamlit app (frontend + inference logic)
+├── app.py                  # Streamlit app (UI + inference for all tabs)
+├── crew_agents.py          # AI Advisor agents + LLM engines
 ├── requirements.txt        # Libraries Streamlit Cloud installs
-├── hotel_bookings.csv       # (optional) raw dataset for the EDA tab
+├── hotel_bookings.csv      # Full dataset for the Data & EDA tab
+├── app_test_data.csv       # Held-out bookings for the Predict tab
+├── .env.example            # Template for LLM API keys (copy to .env)
 ├── .streamlit/config.toml  # Theme / server config
-└── hotel_ai_models/        # Your exported models (.pkl / .joblib / .zip)
+├── docs/
+│   └── agent_workflow.md   # AI Advisor workflow diagrams
+└── hotel_ai_models/        # Trained models & scalers (.pkl)
     ├── optimized_rf_cancellation.pkl
+    ├── dynamic_pricing_regressor.pkl
+    ├── upsell_classifier.pkl
     ├── base_scaler.pkl
     └── ...
 ```
 
-## ✅ What you need to add
+## 📦 What's included
 
-This repo currently ships the **app scaffold only**. To make predictions, add
-your exported artifacts (they weren't in the repo):
+Everything needed to run and deploy ships in the repo:
 
-1. Put your model + scaler files in **`hotel_ai_models/`**. Loose `.pkl`,
-   `.joblib`, `.sav`, or a `.zip` archive of them all work — the app
-   auto-extracts zips at startup. See `hotel_ai_models/README.md` for details.
-2. *(Optional)* Drop `hotel_bookings.csv` in the repo root to enable the EDA
-   tab.
+- **`hotel_ai_models/`** — the trained artifacts: cancellation classifiers
+  (Random Forest, Decision Tree, Logistic Regression), a dynamic-pricing
+  regressor, an upsell classifier, and their scalers.
+- **`hotel_bookings.csv`** — the full dataset, powering the Data & EDA tab.
+- **`app_test_data.csv`** — held-out bookings you can pick from and run
+  predictions on in the Predict tab.
 
-The app **introspects your models**: scikit-learn objects fitted on a pandas
-DataFrame store `feature_names_in_`, and the app reads that to align the
-sidebar inputs to the exact one-hot columns your `pd.get_dummies()` produced —
-no manual column-mapping needed. Until models are present, the app runs in a
-clearly-labelled demo mode instead of crashing.
+The app **introspects each model**: scikit-learn objects fitted on a pandas
+DataFrame carry `feature_names_in_`, and the app reads that to align inputs to
+the exact one-hot columns training produced — no manual column-mapping. It also
+pairs each model with the right scaler (and skips scaling for tree models, which
+were trained unscaled). Drop-in more models any time: loose `.pkl` / `.joblib` /
+`.sav` files, or a `.zip` (auto-extracted at startup) in `hotel_ai_models/`. If
+the folder is ever empty, the app runs in a labelled demo mode instead of
+crashing.
 
 ## 🤖 AI Advisor (agent workflow)
 
