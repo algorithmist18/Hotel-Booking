@@ -5,9 +5,20 @@ correct amount of staff — served as an interactive **Streamlit** web app.
 
 ## 🚀 Live app
 
+**Public URL:** https://hotel-booking-kwxxky4hnhdup4pn5ho5at.streamlit.app/
+
 The app (`app.py`) predicts the probability that a hotel booking is cancelled,
 using your trained scikit-learn models. It also has a data-exploration tab and a
 model-inspection tab.
+
+## 👥 Team
+
+| Name | Roll No |
+|------|---------|
+| Avinash Mishra | 0409/62 |
+| Anit Singh | 0012/62 |
+| Dipti Bharti | 0024/62 |
+| Ria Agarwal | 0133/62 |
 
 ## 📁 Project structure
 
