@@ -6,9 +6,16 @@ joblib
 matplotlib
 seaborn
 
-# AI Advisor tab (CrewAI agents + Gemini). Heavy; pulls in litellm.
+# AI Advisor tab (CrewAI agents). Heavy; pulls in litellm + chromadb.
 # The [google-genai] extra installs CrewAI's native Gemini provider — without it
 # 'gemini/...' models fail with "Google Gen AI native provider not available".
-# Remove these lines if you don't want the AI Advisor on Streamlit Cloud.
-crewai[google-genai]>=0.80
+# Versions are PINNED: leaving them open lets the resolver pick a chromadb/
+# pydantic combo that fails to import on Streamlit Cloud with
+# 'unable to infer type for attribute "chroma_server_nofile"'. This exact set is
+# verified to install and import cleanly. Remove these lines to drop the AI
+# Advisor and deploy the ML app alone.
+crewai[google-genai]==1.15.15
+chromadb==1.1.1
+pydantic==2.12.5
+pydantic-settings==2.15.0
 python-dotenv
