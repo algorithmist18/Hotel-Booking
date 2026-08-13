@@ -851,8 +851,8 @@ with models_tab:
 with advisor_tab:
     st.subheader("🤖 AI Revenue Advisor")
     st.markdown(
-        "Two **CrewAI** agents powered by **Gemini** turn this week's ML forecast "
-        "into an action plan:\n"
+        "Two **CrewAI** agents (choose **OpenAI** or **Gemini**) turn this week's "
+        "ML forecast into an action plan:\n"
         "1. **Senior Hotel Data Analyst** — reads the model outputs and briefs the "
         "risks & opportunities.\n"
         "2. **Director of Revenue Management** — converts that into concrete "
@@ -871,34 +871,36 @@ with advisor_tab:
             f"_Import error: {err}_"
         )
 
-    # --- API key: prefer Streamlit secrets, else a password field -----------
-    secret_key = ""
-    try:
-        secret_key = st.secrets.get("GEMINI_API_KEY", "")
-    except Exception:
-        secret_key = ""
-    env_key = os.environ.get("GEMINI_API_KEY", "")
-
-    key_col, model_col, n_col = st.columns([2, 1, 1])
-    with key_col:
-        if secret_key or env_key:
-            src = "secrets" if secret_key else ".env / environment"
-            st.success(f"Gemini API key found in {src} ✅")
-            api_key = secret_key or env_key
-        else:
-            api_key = st.text_input(
-                "Gemini API key", type="password",
-                help="Local: put GEMINI_API_KEY in a .env file (auto-loaded, "
-                     "gitignored). On Streamlit Cloud: add it under "
-                     "Settings → Secrets. This field is a session-only fallback.",
-            )
+    # --- Provider + model + key --------------------------------------------
+    prov_col, model_col, n_col = st.columns([1, 1, 1])
+    with prov_col:
+        provider = st.selectbox("LLM provider", list(crew_agents.PROVIDERS))
+    prov_cfg = crew_agents.PROVIDERS[provider]
+    env_name = prov_cfg["env"]
     with model_col:
-        gemini_model = st.selectbox(
-            "Gemini model",
-            ["gemini/gemini-2.5-flash", "gemini/gemini-2.5-pro"],
-        )
+        chosen_llm = st.selectbox("Model", prov_cfg["models"])
     with n_col:
         sample_n = st.number_input("Bookings to forecast", 10, 500, 50, step=10)
+
+    # Key: prefer Streamlit secrets, then .env / environment, else a field.
+    secret_key = ""
+    try:
+        secret_key = st.secrets.get(env_name, "")
+    except Exception:
+        secret_key = ""
+    env_key = os.environ.get(env_name, "")
+
+    if secret_key or env_key:
+        st.success(f"`{env_name}` found in "
+                   f"{'secrets' if secret_key else '.env / environment'} ✅")
+        api_key = secret_key or env_key
+    else:
+        api_key = st.text_input(
+            f"{provider} API key ({env_name})", type="password",
+            help=f"Local: put {env_name} in a .env file (auto-loaded, "
+                 "gitignored). On Streamlit Cloud: add it under Settings → "
+                 "Secrets. This field is a session-only fallback.",
+        )
 
     advisor_test_df = load_test_data()
     if advisor_test_df is None:
@@ -912,10 +914,10 @@ with advisor_tab:
         with st.expander("Forecast handed to the agents", expanded=True):
             st.code(context)
         try:
-            with st.spinner(f"Agents deliberating via {gemini_model}… "
+            with st.spinner(f"Agents deliberating via {chosen_llm}… "
                             "(this can take ~30-60s)"):
                 report = crew_agents.run_advisor(
-                    context, api_key=api_key, llm=gemini_model, verbose=False
+                    context, api_key=api_key, llm=chosen_llm, verbose=False
                 )
             st.markdown("### 📋 Revenue action plan")
             st.markdown(report)
@@ -924,13 +926,14 @@ with advisor_tab:
                 "The crew failed to produce a report.\n\n"
                 f"**Details:** {exc}\n\n"
                 "Common causes:\n"
-                "- **Invalid/expired API key** (`API_KEY_INVALID`) — check your "
-                "`GEMINI_API_KEY`.\n"
-                "- **Missing provider** (`native provider not available`) — the "
-                "`crewai[google-genai]` install didn't complete; redeploy so "
-                "`requirements.txt` reinstalls.\n"
-                "- **No quota** or no network egress to Google from the deploy "
-                "environment."
+                "- **Invalid/expired key** (`API_KEY_INVALID` / 401) — check "
+                f"`{env_name}`.\n"
+                "- **Model not available to your account** (`404 NOT_FOUND`) — "
+                "pick a different model above (e.g. an OpenAI model, or "
+                "`gemini-2.0-flash`).\n"
+                "- **Missing Gemini provider** (`native provider not available`) "
+                "— the `crewai[google-genai]` install didn't complete; redeploy.\n"
+                "- **No quota** or no network egress to the provider."
             )
 
 

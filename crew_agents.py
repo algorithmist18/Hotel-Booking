@@ -10,13 +10,15 @@ cancellation forecast into an actionable revenue plan:
 2. **Director of Revenue Management** — takes that briefing and produces concrete
    pricing and overbooking actions.
 
-The heavy ``crewai`` import is deferred into the functions so the rest of the
-Streamlit app keeps working even when CrewAI isn't installed. The Gemini API key
-is never hard-coded — it is read from the environment (``GEMINI_API_KEY``), which
-the caller populates from Streamlit secrets or a password field.
+The agents are provider-agnostic: pass any CrewAI/LiteLLM model id as ``llm``.
+OpenAI (``gpt-4o-mini``, ``gpt-4o``) works out of the box; Gemini
+(``gemini/...``) needs the ``crewai[google-genai]`` extra. The API key is never
+hard-coded — it is read from the environment variable that matches the provider
+(``OPENAI_API_KEY`` / ``GEMINI_API_KEY``), which the caller populates from
+Streamlit secrets, a local ``.env``, or a password field.
 
-CrewAI routes ``gemini/...`` model ids through LiteLLM, which authenticates with
-the ``GEMINI_API_KEY`` environment variable.
+The heavy ``crewai`` import is deferred into the functions so the rest of the
+Streamlit app keeps working even when CrewAI isn't installed.
 """
 
 from __future__ import annotations
@@ -38,8 +40,33 @@ try:
 except Exception:  # pragma: no cover
     pass
 
-# Default Gemini model — the active 2.5 line (1.5 is deprecated).
-DEFAULT_LLM = "gemini/gemini-2.5-flash"
+# Default model — OpenAI works out of the box with CrewAI (no extra install).
+DEFAULT_LLM = "gpt-4o-mini"
+
+# Selectable providers, their API-key env var, and a few model choices each.
+# The model id is passed straight to CrewAI/LiteLLM.
+PROVIDERS = {
+    "OpenAI": {
+        "env": "OPENAI_API_KEY",
+        "models": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"],
+    },
+    "Gemini": {
+        "env": "GEMINI_API_KEY",
+        # Availability varies by account; some keys can't access 2.5.
+        "models": ["gemini/gemini-2.0-flash", "gemini/gemini-2.5-flash",
+                   "gemini/gemini-2.5-pro"],
+    },
+}
+
+
+def env_var_for(llm: str) -> str:
+    """Map a model id to the API-key environment variable it needs."""
+    low = llm.lower()
+    if low.startswith("gemini/") or "gemini" in low:
+        return "GEMINI_API_KEY"
+    if low.startswith("anthropic/") or "claude" in low:
+        return "ANTHROPIC_API_KEY"
+    return "OPENAI_API_KEY"
 
 
 def crewai_available() -> tuple[bool, str]:
@@ -135,11 +162,12 @@ def run_advisor(forecast_context: str, api_key: str | None = None,
     Raises if CrewAI isn't installed or the model call fails — the caller shows
     the error in the UI.
     """
+    env = env_var_for(llm)
     if api_key:
-        os.environ["GEMINI_API_KEY"] = api_key
-    if not os.environ.get("GEMINI_API_KEY"):
+        os.environ[env] = api_key
+    if not os.environ.get(env):
         raise RuntimeError(
-            "No Gemini API key found. Set GEMINI_API_KEY (Streamlit secrets or "
+            f"No API key found. Set {env} (Streamlit secrets, a local .env, or "
             "the API-key field)."
         )
 
