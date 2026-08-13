@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+.streamlit/secrets.toml
+
+# Secrets — never commit real keys. Keep .env local only.
+.env
+.env.*
+!.env.example
