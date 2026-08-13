@@ -95,10 +95,16 @@ A browser tab opens at http://localhost:8501.
 
 ## ☁️ Deploy on Streamlit Community Cloud
 
-1. Push this repo to GitHub (already done for the app files).
-2. Go to <https://share.streamlit.io> and sign in with GitHub.
-3. **New app** → pick this repo/branch → main file path `app.py` → **Deploy**.
-4. Every push to the branch auto-redeploys the app.
+This app is already deployed — **[live here](https://hotel-booking-kwxxky4hnhdup4pn5ho5at.streamlit.app/)** —
+and auto-redeploys on every push to its branch.
+
+To spin up your own instance:
+
+1. Go to <https://share.streamlit.io> and sign in with GitHub.
+2. **Create app** → pick this repo and branch → main file path `app.py` → **Deploy**.
+3. *(Optional, for the AI Advisor)* Under **Settings → Secrets**, add the key for
+   your chosen provider, e.g. `OPENAI_API_KEY = "..."` or `GEMINI_API_KEY = "..."`.
+   The prediction/EDA tabs work without any key.
 
 > **Version tip:** unpickling can break across scikit-learn major versions. If a
 > `.pkl` fails to load on the cloud, pin the version you trained with in
