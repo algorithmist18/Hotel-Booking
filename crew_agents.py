@@ -147,6 +147,131 @@ def crewai_available() -> tuple[bool, str]:
         return False, str(exc)
 
 
+# --------------------------------------------------------------------------- #
+# Lightweight engine — two sequential LLM calls via each provider's REST API,
+# using only the Python standard library. No crewai / chromadb / litellm, so it
+# installs and runs anywhere (this is the default the app uses).
+# --------------------------------------------------------------------------- #
+ANALYST_SYSTEM = (
+    "You are a Senior Hotel Data Analyst. You are an expert at translating raw "
+    "machine-learning probabilities into plain-English business insights. Given "
+    "this week's ML occupancy/cancellation forecast, identify the key "
+    "operational risks (e.g. high cancellation exposure, low occupancy) and "
+    "opportunities (e.g. upsell potential, pricing headroom). Reply with a "
+    "concise bullet-point briefing of 5-8 bullets, each tied to a figure from "
+    "the forecast."
+)
+MANAGER_SYSTEM = (
+    "You are the Director of Revenue Management, a ruthless optimizer. Using the "
+    "analyst's briefing, produce a concrete action plan to maximize revenue this "
+    "week: pricing moves (raise/hold/discount and by roughly how much), "
+    "overbooking levels given the cancellation forecast, and targeted upsell "
+    "pushes. Reply with a numbered action plan of 4-6 items; each item states a "
+    "specific move, the trigger from the data, and the expected revenue impact."
+)
+
+
+def _strip_provider_prefix(model: str) -> str:
+    """`gemini/gemini-3.5-flash-lite` -> `gemini-3.5-flash-lite` for REST calls."""
+    for pre in ("gemini/", "groq/", "openai/", "anthropic/"):
+        if model.startswith(pre):
+            return model[len(pre):]
+    return model
+
+
+def chat_once(provider: str, model: str, api_key: str, system: str, user: str,
+              temperature: float = 0.3, timeout: int = 60) -> str:
+    """One chat completion via the provider's REST API (stdlib only)."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    prov = provider.lower()
+    model = _strip_provider_prefix(model)
+
+    def _post(url: str, headers: dict, payload: dict) -> dict:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", "replace")[:400]
+            raise RuntimeError(f"{exc.code} {exc.reason}: {body}") from None
+
+    if prov == "gemini":
+        url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+               f"{model}:generateContent?key={api_key}")
+        payload = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": {"temperature": temperature},
+        }
+        data = _post(url, {"Content-Type": "application/json"}, payload)
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+
+    if prov == "anthropic":
+        url = "https://api.anthropic.com/v1/messages"
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model, "max_tokens": 1500, "temperature": temperature,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+        }
+        data = _post(url, headers, payload)
+        return data["content"][0]["text"]
+
+    # OpenAI-compatible (OpenAI, Groq).
+    base = {
+        "openai": "https://api.openai.com/v1/chat/completions",
+        "groq": "https://api.groq.com/openai/v1/chat/completions",
+    }.get(prov)
+    if not base:
+        raise ValueError(f"Provider '{provider}' not supported by the lite engine.")
+    headers = {"Authorization": f"Bearer {api_key}",
+               "Content-Type": "application/json"}
+    payload = {
+        "model": model, "temperature": temperature,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    data = _post(base, headers, payload)
+    return data["choices"][0]["message"]["content"]
+
+
+def run_advisor_lite(forecast_context: str, provider: str, model: str,
+                     api_key: str, temperature: float = 0.3) -> str:
+    """Run the two-agent flow with direct REST calls; return a markdown report.
+
+    Same personas and hand-off as the CrewAI crew (Analyst -> Revenue Manager),
+    but with zero heavy dependencies so it deploys reliably.
+    """
+    if not api_key:
+        raise RuntimeError("No API key provided.")
+
+    briefing = chat_once(
+        provider, model, api_key, ANALYST_SYSTEM,
+        "Here is this week's ML-generated hotel booking forecast:\n\n"
+        f"{forecast_context}\n\nAnalyze it.",
+        temperature=temperature,
+    )
+    plan = chat_once(
+        provider, model, api_key, MANAGER_SYSTEM,
+        "Analyst briefing:\n\n" + briefing + "\n\nNow produce the action plan.",
+        temperature=temperature,
+    )
+    return (
+        "### 🧮 Analyst briefing\n\n" + briefing.strip()
+        + "\n\n### 💰 Revenue action plan\n\n" + plan.strip()
+    )
+
+
 def make_llm(llm: str = DEFAULT_LLM, temperature: float = 0.3):
     """Wrap a model id in CrewAI's LLM object so temperature (etc.) applies.
 

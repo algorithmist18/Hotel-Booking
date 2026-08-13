@@ -851,8 +851,8 @@ with models_tab:
 with advisor_tab:
     st.subheader("🤖 AI Revenue Advisor")
     st.markdown(
-        "Two **CrewAI** agents (choose **OpenAI** or **Gemini**) turn this week's "
-        "ML forecast into an action plan:\n"
+        "Two agents (choose **OpenAI**, **Groq**, **Gemini**, or **Anthropic**) "
+        "turn this week's ML forecast into an action plan:\n"
         "1. **Senior Hotel Data Analyst** — reads the model outputs and briefs the "
         "risks & opportunities.\n"
         "2. **Director of Revenue Management** — converts that into concrete "
@@ -860,16 +860,6 @@ with advisor_tab:
     )
 
     import crew_agents
-
-    ok, err = crew_agents.crewai_available()
-    if not ok:
-        st.warning(
-            "CrewAI isn't installed in this environment, so the crew can't run "
-            "here. It's listed in `requirements.txt`, so Streamlit Cloud will "
-            "install it on deploy. To run locally:\n\n"
-            "```bash\npip install crewai\n```\n\n"
-            f"_Import error: {err}_"
-        )
 
     # --- Provider + model + key --------------------------------------------
     prov_col, model_col, n_col = st.columns([1, 1, 1])
@@ -935,10 +925,30 @@ with advisor_tab:
         except Exception as exc:
             st.error(f"Couldn't list models: {exc}")
 
+    # --- Engine: lightweight (default) or CrewAI (optional) -----------------
+    crew_ok, crew_err = crew_agents.crewai_available()
+    use_crew = st.checkbox(
+        "Use the CrewAI framework instead of the built-in engine",
+        value=False,
+        help="Off (default): a lightweight, dependency-free engine that calls "
+             "the provider's API directly — same two-agent report, deploys "
+             "anywhere. On: run the full CrewAI framework (must be installed).",
+    )
+    if use_crew and not crew_ok:
+        st.warning(
+            "CrewAI isn't importable in this environment, so it can't run here. "
+            "Uncheck the box to use the built-in engine (recommended), or install "
+            "CrewAI locally with `pip install crewai`.\n\n"
+            f"_Import error: {crew_err}_"
+        )
+
     advisor_test_df = load_test_data()
     if advisor_test_df is None:
         st.info("Add `app_test_data.csv` to generate a forecast for the agents.")
-    can_run = ok and bool(api_key) and advisor_test_df is not None and bool(model_names)
+    can_run = (
+        bool(api_key) and advisor_test_df is not None and bool(model_names)
+        and (not use_crew or crew_ok)
+    )
 
     if st.button("Generate AI strategy report", type="primary",
                  disabled=not can_run, use_container_width=True):
@@ -949,24 +959,27 @@ with advisor_tab:
         try:
             with st.spinner(f"Agents deliberating via {chosen_llm}… "
                             "(this can take ~30-60s)"):
-                report = crew_agents.run_advisor(
-                    context, api_key=api_key, llm=chosen_llm,
-                    env_var=env_name, temperature=temperature, verbose=False
-                )
-            st.markdown("### 📋 Revenue action plan")
+                if use_crew:
+                    report = crew_agents.run_advisor(
+                        context, api_key=api_key, llm=chosen_llm,
+                        env_var=env_name, temperature=temperature, verbose=False
+                    )
+                else:
+                    report = crew_agents.run_advisor_lite(
+                        context, provider=provider, model=chosen_llm,
+                        api_key=api_key, temperature=temperature
+                    )
             st.markdown(report)
         except Exception as exc:
             st.error(
-                "The crew failed to produce a report.\n\n"
+                "Failed to produce a report.\n\n"
                 f"**Details:** {exc}\n\n"
                 "Common causes:\n"
-                "- **Invalid/expired key** (`API_KEY_INVALID` / 401) — check "
+                "- **Invalid/expired key** (`401` / `API_KEY_INVALID`) — check "
                 f"`{env_name}`.\n"
-                "- **Model not available to your account** (`404 NOT_FOUND`) — "
-                "pick a different model above (e.g. an OpenAI model, or "
-                "`gemini-2.0-flash`).\n"
-                "- **Missing Gemini provider** (`native provider not available`) "
-                "— the `crewai[google-genai]` install didn't complete; redeploy.\n"
+                "- **Model not available to your account** (`404`) — pick another "
+                "model, or use the **List models** button above to find a valid "
+                "one.\n"
                 "- **No quota** or no network egress to the provider."
             )
 
