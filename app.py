@@ -887,10 +887,15 @@ with advisor_tab:
         chosen_llm = st.text_input(
             "Custom model id", value=prov_cfg["models"][0],
             help="Any CrewAI/LiteLLM model id for this provider, e.g. "
-                 "`gemini/gemini-flash-latest`.",
+                 "`gemini/gemini-3.5-flash-lite`.",
         )
     else:
         chosen_llm = picked
+
+    temperature = st.slider(
+        "Temperature", 0.0, 1.0, 0.3, 0.1,
+        help="Lower = more focused/deterministic; higher = more creative.",
+    )
 
     # Key: prefer Streamlit secrets, then .env / environment, else a field.
     secret_key = ""
@@ -946,7 +951,7 @@ with advisor_tab:
                             "(this can take ~30-60s)"):
                 report = crew_agents.run_advisor(
                     context, api_key=api_key, llm=chosen_llm,
-                    env_var=env_name, verbose=False
+                    env_var=env_name, temperature=temperature, verbose=False
                 )
             st.markdown("### 📋 Revenue action plan")
             st.markdown(report)

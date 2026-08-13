@@ -60,10 +60,11 @@ PROVIDERS = {
     },
     "Gemini": {
         "env": "GEMINI_API_KEY",
-        # Availability varies by account; some keys can't access 2.5. Use the
-        # "list models" button to see what YOUR key can call.
-        "models": ["gemini/gemini-2.0-flash", "gemini/gemini-flash-latest",
-                   "gemini/gemini-2.5-flash", "gemini/gemini-2.5-pro"],
+        # Gemini 3.x family (2.5-* is being deprecated / restricted for new
+        # keys). Availability still varies by account — use the "list models"
+        # button to see what YOUR key can call.
+        "models": ["gemini/gemini-3.5-flash-lite", "gemini/gemini-3.5-flash",
+                   "gemini/gemini-3.6-flash", "gemini/gemini-2.5-flash"],
         "keys_url": "https://aistudio.google.com/app/apikey",
     },
     "Anthropic": {
@@ -146,9 +147,21 @@ def crewai_available() -> tuple[bool, str]:
         return False, str(exc)
 
 
-def build_agents(llm: str = DEFAULT_LLM, verbose: bool = True):
-    """Create the two Gemini-powered agents."""
+def make_llm(llm: str = DEFAULT_LLM, temperature: float = 0.3):
+    """Wrap a model id in CrewAI's LLM object so temperature (etc.) applies.
+
+    e.g. ``LLM(model="gemini/gemini-3.5-flash-lite", temperature=0.3)``.
+    """
+    from crewai import LLM
+    return LLM(model=llm, temperature=temperature)
+
+
+def build_agents(llm: str = DEFAULT_LLM, verbose: bool = True,
+                 temperature: float = 0.3):
+    """Create the two agents, both driven by the chosen LLM."""
     from crewai import Agent
+
+    llm_obj = make_llm(llm, temperature)
 
     data_analyst = Agent(
         role="Senior Hotel Data Analyst",
@@ -156,7 +169,7 @@ def build_agents(llm: str = DEFAULT_LLM, verbose: bool = True):
               "risks or opportunities."),
         backstory=("You are an expert at translating raw machine learning "
                    "probabilities into plain English business insights."),
-        llm=llm,
+        llm=llm_obj,
         verbose=verbose,
         allow_delegation=False,
     )
@@ -167,7 +180,7 @@ def build_agents(llm: str = DEFAULT_LLM, verbose: bool = True):
               "based on data."),
         backstory=("You are a ruthless optimizer. You take data analyst reports "
                    "and create concrete pricing actions."),
-        llm=llm,
+        llm=llm_obj,
         verbose=verbose,
         allow_delegation=False,
     )
@@ -176,11 +189,11 @@ def build_agents(llm: str = DEFAULT_LLM, verbose: bool = True):
 
 
 def build_crew(forecast_context: str, llm: str = DEFAULT_LLM,
-               verbose: bool = True):
+               verbose: bool = True, temperature: float = 0.3):
     """Assemble the sequential crew around a forecast summary."""
     from crewai import Task, Crew, Process
 
-    data_analyst, revenue_manager = build_agents(llm, verbose)
+    data_analyst, revenue_manager = build_agents(llm, verbose, temperature)
 
     analysis_task = Task(
         description=(
@@ -224,7 +237,7 @@ def build_crew(forecast_context: str, llm: str = DEFAULT_LLM,
 
 def run_advisor(forecast_context: str, api_key: str | None = None,
                 llm: str = DEFAULT_LLM, verbose: bool = True,
-                env_var: str | None = None) -> str:
+                env_var: str | None = None, temperature: float = 0.3) -> str:
     """Run the crew end-to-end and return the final report as text.
 
     ``api_key`` (if provided) is exported as the provider's key env var for
@@ -241,7 +254,8 @@ def run_advisor(forecast_context: str, api_key: str | None = None,
             "the API-key field)."
         )
 
-    crew = build_crew(forecast_context, llm=llm, verbose=verbose)
+    crew = build_crew(forecast_context, llm=llm, verbose=verbose,
+                      temperature=temperature)
     return str(crew.kickoff())
 
 
