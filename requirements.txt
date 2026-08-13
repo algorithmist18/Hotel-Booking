@@ -7,7 +7,8 @@ matplotlib
 seaborn
 
 # AI Advisor tab (CrewAI agents + Gemini). Heavy; pulls in litellm.
+# The [google-genai] extra installs CrewAI's native Gemini provider — without it
+# 'gemini/...' models fail with "Google Gen AI native provider not available".
 # Remove these lines if you don't want the AI Advisor on Streamlit Cloud.
-crewai>=0.80
-google-generativeai
+crewai[google-genai]>=0.80
 python-dotenv

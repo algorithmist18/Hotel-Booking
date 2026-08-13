@@ -923,8 +923,14 @@ with advisor_tab:
             st.error(
                 "The crew failed to produce a report.\n\n"
                 f"**Details:** {exc}\n\n"
-                "Common causes: an invalid/expired Gemini API key, no quota, or "
-                "no network egress to Google from the deploy environment."
+                "Common causes:\n"
+                "- **Invalid/expired API key** (`API_KEY_INVALID`) — check your "
+                "`GEMINI_API_KEY`.\n"
+                "- **Missing provider** (`native provider not available`) — the "
+                "`crewai[google-genai]` install didn't complete; redeploy so "
+                "`requirements.txt` reinstalls.\n"
+                "- **No quota** or no network egress to Google from the deploy "
+                "environment."
             )
 
 

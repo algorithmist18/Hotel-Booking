@@ -23,6 +23,13 @@ from __future__ import annotations
 
 import os
 
+# Opt out of CrewAI/OpenTelemetry telemetry BEFORE importing crewai. Otherwise it
+# blocks retrying to reach telemetry.crewai.com, which stalls runs in sandboxed
+# or egress-restricted deploys (e.g. Streamlit Cloud).
+os.environ.setdefault("CREWAI_TELEMETRY_OPT_OUT", "true")
+os.environ.setdefault("CREWAI_TRACING_ENABLED", "false")
+os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+
 # Pick up a local .env (GEMINI_API_KEY=...) with no UI. No-op if python-dotenv
 # or the file is absent.
 try:
