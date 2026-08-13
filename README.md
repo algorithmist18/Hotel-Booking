@@ -11,6 +11,14 @@ The app (`app.py`) predicts the probability that a hotel booking is cancelled,
 using your trained scikit-learn models. It also has a data-exploration tab and a
 model-inspection tab.
 
+## 📓 Model training notebook
+
+The models were trained and exported in this Colab notebook:
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1TiEW9BfZ3A6rTTnRCBU3Wo1V4pcP9YMm)
+
+<https://colab.research.google.com/drive/1TiEW9BfZ3A6rTTnRCBU3Wo1V4pcP9YMm>
+
 ## 👥 Team
 
 | Name | Roll No |
