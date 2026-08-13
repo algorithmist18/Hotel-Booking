@@ -1,5 +1,5 @@
 """
-CrewAI agents (Gemini-powered) for the Hotel Booking AI Manager.
+CrewAI agents (multi-provider) for the Hotel Booking AI Manager.
 ===============================================================
 
 Two agents collaborate, sequentially, to turn the ML models' occupancy /
@@ -49,12 +49,28 @@ PROVIDERS = {
     "OpenAI": {
         "env": "OPENAI_API_KEY",
         "models": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"],
+        "keys_url": "https://platform.openai.com/api-keys",
+    },
+    "Groq": {
+        # Free, fast, and easy to get working — a good fallback provider.
+        "env": "GROQ_API_KEY",
+        "models": ["groq/llama-3.3-70b-versatile", "groq/llama-3.1-8b-instant",
+                   "groq/openai/gpt-oss-20b"],
+        "keys_url": "https://console.groq.com/keys",
     },
     "Gemini": {
         "env": "GEMINI_API_KEY",
-        # Availability varies by account; some keys can't access 2.5.
-        "models": ["gemini/gemini-2.0-flash", "gemini/gemini-2.5-flash",
-                   "gemini/gemini-2.5-pro"],
+        # Availability varies by account; some keys can't access 2.5. Use the
+        # "list models" button to see what YOUR key can call.
+        "models": ["gemini/gemini-2.0-flash", "gemini/gemini-flash-latest",
+                   "gemini/gemini-2.5-flash", "gemini/gemini-2.5-pro"],
+        "keys_url": "https://aistudio.google.com/app/apikey",
+    },
+    "Anthropic": {
+        "env": "ANTHROPIC_API_KEY",
+        "models": ["anthropic/claude-3-5-haiku-20241022",
+                   "anthropic/claude-3-5-sonnet-20241022"],
+        "keys_url": "https://console.anthropic.com/settings/keys",
     },
 }
 
@@ -64,9 +80,61 @@ def env_var_for(llm: str) -> str:
     low = llm.lower()
     if low.startswith("gemini/") or "gemini" in low:
         return "GEMINI_API_KEY"
+    if low.startswith("groq/") or "groq" in low:
+        return "GROQ_API_KEY"
     if low.startswith("anthropic/") or "claude" in low:
         return "ANTHROPIC_API_KEY"
     return "OPENAI_API_KEY"
+
+
+def list_models(provider: str, api_key: str, timeout: int = 15) -> list[str]:
+    """Return the model ids the given key can actually access, provider-formatted.
+
+    Uses each provider's public "list models" endpoint so you can discover a
+    working model id (resolves 404 "model not available to your account"). Raises
+    with the API's message on auth/other errors so the UI can show it.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    prov = provider.lower()
+
+    def _get(url: str, headers: dict) -> dict:
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", "replace")[:300]
+            raise RuntimeError(f"{exc.code} {exc.reason}: {body}") from None
+
+    if prov == "gemini":
+        data = _get(
+            "https://generativelanguage.googleapis.com/v1beta/models"
+            f"?key={api_key}&pageSize=200",
+            {},
+        )
+        out = [
+            "gemini/" + m["name"].split("/")[-1]
+            for m in data.get("models", [])
+            if "generateContent" in m.get("supportedGenerationMethods", [])
+        ]
+        return sorted(out)
+
+    # OpenAI-compatible listing (OpenAI, Groq).
+    base = {
+        "openai": "https://api.openai.com/v1/models",
+        "groq": "https://api.groq.com/openai/v1/models",
+    }.get(prov)
+    if not base:
+        raise ValueError(f"Model listing isn't supported for '{provider}'.")
+
+    data = _get(base, {"Authorization": f"Bearer {api_key}"})
+    ids = [m["id"] for m in data.get("data", [])]
+    if prov == "groq":
+        ids = [f"groq/{i}" for i in ids]
+    return sorted(ids)
 
 
 def crewai_available() -> tuple[bool, str]:
@@ -155,14 +223,16 @@ def build_crew(forecast_context: str, llm: str = DEFAULT_LLM,
 
 
 def run_advisor(forecast_context: str, api_key: str | None = None,
-                llm: str = DEFAULT_LLM, verbose: bool = True) -> str:
+                llm: str = DEFAULT_LLM, verbose: bool = True,
+                env_var: str | None = None) -> str:
     """Run the crew end-to-end and return the final report as text.
 
-    ``api_key`` (if provided) is exported as ``GEMINI_API_KEY`` for LiteLLM.
-    Raises if CrewAI isn't installed or the model call fails — the caller shows
-    the error in the UI.
+    ``api_key`` (if provided) is exported as the provider's key env var for
+    LiteLLM. ``env_var`` overrides the auto-detected variable (useful for custom
+    model ids). Raises if CrewAI isn't installed or the model call fails — the
+    caller shows the error in the UI.
     """
-    env = env_var_for(llm)
+    env = env_var or env_var_for(llm)
     if api_key:
         os.environ[env] = api_key
     if not os.environ.get(env):

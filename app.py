@@ -878,9 +878,19 @@ with advisor_tab:
     prov_cfg = crew_agents.PROVIDERS[provider]
     env_name = prov_cfg["env"]
     with model_col:
-        chosen_llm = st.selectbox("Model", prov_cfg["models"])
+        model_options = prov_cfg["models"] + ["✏️ Custom…"]
+        picked = st.selectbox("Model", model_options)
     with n_col:
         sample_n = st.number_input("Bookings to forecast", 10, 500, 50, step=10)
+
+    if picked == "✏️ Custom…":
+        chosen_llm = st.text_input(
+            "Custom model id", value=prov_cfg["models"][0],
+            help="Any CrewAI/LiteLLM model id for this provider, e.g. "
+                 "`gemini/gemini-flash-latest`.",
+        )
+    else:
+        chosen_llm = picked
 
     # Key: prefer Streamlit secrets, then .env / environment, else a field.
     secret_key = ""
@@ -901,6 +911,24 @@ with advisor_tab:
                  "gitignored). On Streamlit Cloud: add it under Settings → "
                  "Secrets. This field is a session-only fallback.",
         )
+    st.caption(f"Get a {provider} key: {prov_cfg['keys_url']}")
+
+    # Diagnostic: which models can THIS key actually call? (resolves 404s)
+    if provider in ("OpenAI", "Groq", "Gemini") and api_key and st.button(
+        "🔍 List models this key can access", use_container_width=True
+    ):
+        try:
+            with st.spinner("Querying the provider…"):
+                available = crew_agents.list_models(provider, api_key)
+            if available:
+                st.success(f"{len(available)} models available to your key:")
+                st.code("\n".join(available))
+                st.caption("Copy a working id into the **Custom…** model field "
+                           "above if the dropdown default 404s.")
+            else:
+                st.warning("The key is valid but no chat models were returned.")
+        except Exception as exc:
+            st.error(f"Couldn't list models: {exc}")
 
     advisor_test_df = load_test_data()
     if advisor_test_df is None:
@@ -917,7 +945,8 @@ with advisor_tab:
             with st.spinner(f"Agents deliberating via {chosen_llm}… "
                             "(this can take ~30-60s)"):
                 report = crew_agents.run_advisor(
-                    context, api_key=api_key, llm=chosen_llm, verbose=False
+                    context, api_key=api_key, llm=chosen_llm,
+                    env_var=env_name, verbose=False
                 )
             st.markdown("### 📋 Revenue action plan")
             st.markdown(report)
