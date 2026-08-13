@@ -28,6 +28,7 @@ demo mode so the deployment never crashes.
 
 from __future__ import annotations
 
+import datetime as _dt
 import glob
 import os
 import zipfile
@@ -176,31 +177,97 @@ def load_dataset() -> pd.DataFrame | None:
 def expected_features(scaler, model) -> list[str] | None:
     """Return the ordered feature names the pipeline expects, or ``None``.
 
-    Preference order: the scaler's fitted columns (data is scaled first), then
-    the model's fitted columns.
+    Preference order: the *model's* fitted columns (the model is the final
+    consumer), then the scaler's. For a correctly-paired model/scaler these are
+    identical; preferring the model keeps us right even if a scaler is missing.
     """
-    for obj in (scaler, model):
+    for obj in (model, scaler):
         if obj is not None and hasattr(obj, "feature_names_in_"):
             return list(obj.feature_names_in_)
     # Fall back to feature count only (names unknown).
     return None
 
 
+def pick_scaler(model, scalers: dict, model_name: str = ""):
+    """Choose the scaler that matches this model, or ``None``.
+
+    Different model families here have different feature spaces (cancellation vs
+    upsell vs pricing).
+
+    1. If the model carries ``feature_names_in_`` (trees, RF), pair it with the
+       scaler whose columns overlap ~completely — otherwise scale nothing (the
+       right choice for the tree pricing regressor trained unscaled).
+    2. If the model has *no* feature names (e.g. LogisticRegression trained on a
+       scaled array), fall back to matching by feature count, disambiguating by
+       name family (``upsell`` vs cancellation ``base``).
+    """
+    if not scalers:
+        return None
+
+    if hasattr(model, "feature_names_in_"):
+        model_cols = set(model.feature_names_in_)
+        for sc in scalers.values():
+            if not hasattr(sc, "feature_names_in_"):
+                continue
+            # Require an exact column-set match — a scaler with *nearly* the same
+            # columns (e.g. the 239-col cancellation scaler vs the 222-col pricing
+            # model) would silently reshape the input to the wrong width.
+            if set(sc.feature_names_in_) == model_cols:
+                return sc
+        return None
+
+    # No feature names: match by count, then by name family.
+    n = getattr(model, "n_features_in_", None)
+    candidates = [
+        (nm, sc) for nm, sc in scalers.items()
+        if getattr(sc, "n_features_in_", None) == n
+    ] or list(scalers.items())
+    if len(candidates) == 1:
+        return candidates[0][1]
+    want_upsell = "upsell" in model_name.lower()
+    for nm, sc in candidates:
+        if ("upsell" in nm.lower()) == want_upsell:
+            return sc
+    return candidates[0][1]
+
+
+def country_codes(artifacts: dict) -> list[str]:
+    """ISO codes the loaded models recognise, from their ``country_*`` columns."""
+    codes: set[str] = set()
+    for obj in artifacts["objects"].values():
+        names = getattr(obj, "feature_names_in_", None)
+        if names is None:
+            continue
+        for col in names:
+            if isinstance(col, str) and col.startswith("country_"):
+                codes.add(col[len("country_"):])
+    ordered = sorted(codes)
+    if "PRT" in ordered:  # most common origin in this dataset — surface it first
+        ordered = ["PRT"] + [c for c in ordered if c != "PRT"]
+    return ordered
+
+
 # --------------------------------------------------------------------------- #
 # 3. Feature engineering — map raw UI inputs to the model's encoded columns
 # --------------------------------------------------------------------------- #
-def collect_raw_inputs() -> dict:
+def collect_raw_inputs(country_options: list[str] | None = None) -> dict:
     """Render sidebar widgets and return a dict of raw (un-encoded) inputs.
 
     Fields mirror the well-known *Hotel Booking Demand* dataset. Not every model
     will use every field — unused ones are simply dropped during re-indexing.
+
+    ``country_options`` is the list of ISO country codes the loaded models
+    actually recognise (derived from their ``country_*`` dummy columns), so the
+    dropdown only ever offers codes that map to a real feature.
     """
     st.sidebar.header("🧾 Guest & Booking Details")
 
     with st.sidebar.expander("Stay", expanded=True):
         hotel = st.selectbox("Hotel type", ["City Hotel", "Resort Hotel"])
         lead_time = st.slider("Lead time (days before arrival)", 0, 737, 30)
+        arrival_year = st.selectbox("Arrival year", [2015, 2016, 2017], index=1)
         arrival_month = st.selectbox("Arrival month", MONTHS, index=6)
+        arrival_day = st.slider("Arrival day of month", 1, 31, 15)
         week_nights = st.slider("Week nights", 0, 30, 2)
         weekend_nights = st.slider("Weekend nights", 0, 16, 1)
 
@@ -231,6 +298,11 @@ def collect_raw_inputs() -> dict:
             "Reserved room type",
             list("ABCDEFGHLP"),
         )
+        opts = country_options or ["PRT", "GBR", "FRA", "ESP", "DEU", "ITA",
+                                   "IRL", "BEL", "BRA", "NLD", "USA", "CHE"]
+        default_country = opts.index("PRT") if "PRT" in opts else 0
+        country = st.selectbox("Country (guest origin)", opts, index=default_country)
+        agent = st.number_input("Agent ID (0 = none)", 0, 600, 9)
 
     with st.sidebar.expander("History & extras", expanded=False):
         is_repeated_guest = st.selectbox("Repeated guest?", ["No", "Yes"])
@@ -245,19 +317,35 @@ def collect_raw_inputs() -> dict:
         adr = st.number_input("ADR (avg daily rate)", 0.0, 6000.0, 100.0, step=5.0)
         required_car_parking_spaces = st.number_input("Parking spaces", 0, 8, 0)
         total_of_special_requests = st.number_input("Special requests", 0, 10, 0)
+        is_canceled = st.selectbox(
+            "Booking currently cancelled? (upsell model only)", ["No", "Yes"]
+        )
 
+    month_num = MONTHS.index(arrival_month) + 1
     total_nights = week_nights + weekend_nights
+    total_guests = adults + children + babies
+    try:
+        week_number = _dt.date(arrival_year, month_num, arrival_day).isocalendar()[1]
+    except ValueError:
+        week_number = min(53, (month_num - 1) * 4 + 2)
+
     return {
         "hotel": hotel,
         "lead_time": lead_time,
+        "arrival_date_year": arrival_year,
         "arrival_date_month": arrival_month,
-        "arrival_date_month_num": MONTHS.index(arrival_month) + 1,
+        "arrival_date_month_num": month_num,
+        "arrival_date_week_number": week_number,
+        "arrival_date_day_of_month": arrival_day,
         "stays_in_week_nights": week_nights,
         "stays_in_weekend_nights": weekend_nights,
         "total_nights": total_nights,
         "adults": adults,
         "children": children,
         "babies": babies,
+        "total_guests": total_guests,
+        "country": country,
+        "agent": agent,
         "market_segment": market_segment,
         "distribution_channel": distribution_channel,
         "deposit_type": deposit_type,
@@ -266,6 +354,7 @@ def collect_raw_inputs() -> dict:
         "reserved_room_type": reserved_room_type,
         "assigned_room_type": reserved_room_type,
         "is_repeated_guest": 1 if is_repeated_guest == "Yes" else 0,
+        "is_canceled": 1 if is_canceled == "Yes" else 0,
         "previous_cancellations": previous_cancellations,
         "previous_bookings_not_canceled": previous_bookings_not_canceled,
         "booking_changes": booking_changes,
@@ -280,8 +369,11 @@ def collect_raw_inputs() -> dict:
 _CATEGORICAL = {
     "hotel", "arrival_date_month", "market_segment", "distribution_channel",
     "deposit_type", "customer_type", "meal", "reserved_room_type",
-    "assigned_room_type",
+    "assigned_room_type", "country",
 }
+
+# Helper keys that are not model features (used only to derive other values).
+_NON_FEATURE = {"arrival_date_month_num"}
 
 
 def build_feature_row(raw: dict, expected_cols: list[str] | None) -> pd.DataFrame:
@@ -299,7 +391,8 @@ def build_feature_row(raw: dict, expected_cols: list[str] | None) -> pd.DataFram
     we return the full encoded frame and let the caller handle alignment by
     count.
     """
-    numeric = {k: v for k, v in raw.items() if k not in _CATEGORICAL
+    numeric = {k: v for k, v in raw.items()
+               if k not in _CATEGORICAL and k not in _NON_FEATURE
                and not isinstance(v, str)}
     frame = pd.DataFrame([numeric])
 
@@ -317,39 +410,36 @@ def build_feature_row(raw: dict, expected_cols: list[str] | None) -> pd.DataFram
     return frame.astype(float)
 
 
-def run_prediction(model, scaler, features: pd.DataFrame):
-    """Scale (if a scaler is available) and predict. Returns (label, proba)."""
-    X = features.values
-    if scaler is not None and hasattr(scaler, "transform"):
-        try:
-            X = scaler.transform(features)
-        except Exception:
-            # Column mismatch: try aligning to the scaler's expected names.
-            if hasattr(scaler, "feature_names_in_"):
-                aligned = features.reindex(
-                    columns=list(scaler.feature_names_in_), fill_value=0
-                )
-                X = scaler.transform(aligned)
-            else:
-                raise
+def run_prediction(model, scaler, features: pd.DataFrame) -> dict:
+    """Scale (if a scaler is paired) and predict.
 
-    proba = None
+    Returns a dict describing the result:
+        {"kind": "classifier", "label": int, "proba": float}   or
+        {"kind": "regressor",  "value": float}
+    """
+    X = features
+    if scaler is not None and hasattr(scaler, "transform"):
+        # Align to the scaler's own column order before transforming.
+        if hasattr(scaler, "feature_names_in_"):
+            X = features.reindex(
+                columns=list(scaler.feature_names_in_), fill_value=0
+            )
+        X = scaler.transform(X)
+
     if hasattr(model, "predict_proba"):
         proba = float(model.predict_proba(X)[0][1])
-    label = int(model.predict(X)[0])
-    if proba is None:
-        proba = float(label)
-    return label, proba
+        return {"kind": "classifier", "label": int(proba > 0.5), "proba": proba}
+    return {"kind": "regressor", "value": float(model.predict(X)[0])}
 
 
 # --------------------------------------------------------------------------- #
 # 4. UI — header + tabs
 # --------------------------------------------------------------------------- #
-st.title("🏨 Hotel Booking AI: Cancellation Predictor")
+st.title("🏨 Hotel Booking AI Manager")
 st.markdown(
-    "Predict the likelihood that a booking is cancelled, explore the dataset, "
-    "and inspect the deployed models — all served from your GitHub repo via "
-    "Streamlit Community Cloud."
+    "Run the deployed models — **cancellation risk**, **dynamic pricing**, and "
+    "**upsell** — explore the dataset, and inspect each model. Served from your "
+    "GitHub repo via Streamlit Community Cloud."
 )
 
 artifacts = load_artifacts()
@@ -360,12 +450,21 @@ predict_tab, data_tab, models_tab = st.tabs(
 )
 
 
+def _model_purpose(name: str) -> str:
+    """Best-effort human label for what a model predicts, from its filename."""
+    low = name.lower()
+    if "pricing" in low or "regress" in low or "adr" in low:
+        return "price"          # regression → predicted ADR
+    if "upsell" in low:
+        return "upsell"         # classification → upsell likelihood
+    return "cancellation"       # default → cancellation risk
+
+
 # ---- Predict tab ---------------------------------------------------------- #
 with predict_tab:
-    raw_inputs = collect_raw_inputs()
+    raw_inputs = collect_raw_inputs(country_codes(artifacts))
 
     model_names = list(artifacts["models"].keys())
-    scaler_names = list(artifacts["scalers"].keys())
 
     if not model_names:
         st.warning(
@@ -379,23 +478,31 @@ with predict_tab:
         )
         st.divider()
 
-    col_a, col_b = st.columns([1, 1])
-    with col_a:
-        chosen_model = st.selectbox(
-            "Model", model_names or ["(demo — no model loaded)"],
-            help="Pick which trained estimator to run.",
+    chosen_model = st.selectbox(
+        "Model", model_names or ["(demo — no model loaded)"],
+        help="Pick which trained estimator to run. The matching scaler is "
+             "selected automatically.",
+    )
+
+    # Show which scaler will be paired with the chosen model.
+    if model_names:
+        _paired = pick_scaler(artifacts["models"][chosen_model],
+                              artifacts["scalers"], chosen_model)
+        _paired_name = next(
+            (n for n, s in artifacts["scalers"].items() if s is _paired), None
         )
-    with col_b:
-        scaler_choice = st.selectbox(
-            "Scaler", ["(auto)"] + scaler_names,
-            help="Auto picks the first fitted scaler if one exists.",
+        st.caption(
+            f"Purpose: **{_model_purpose(chosen_model)}** · "
+            f"Scaler: **{_paired_name or 'none (unscaled)'}**"
         )
 
     predict_clicked = st.button(
-        "Predict Cancellation Risk", type="primary", use_container_width=True
+        "Predict", type="primary", use_container_width=True
     )
 
     if predict_clicked:
+        purpose = _model_purpose(chosen_model) if model_names else "cancellation"
+
         if not model_names:
             # Deterministic heuristic so the demo UI still responds sensibly.
             score = (
@@ -406,45 +513,51 @@ with predict_tab:
                 - 0.10 * raw_inputs["total_of_special_requests"]
                 - 0.15 * raw_inputs["is_repeated_guest"]
             )
-            probability = float(np.clip(score, 0.02, 0.98))
-            st.caption("Showing a heuristic estimate (demo mode — no model loaded).")
+            result = {"kind": "classifier", "label": int(score > 0.5),
+                      "proba": float(np.clip(score, 0.02, 0.98))}
+            st.caption("Heuristic estimate (demo mode — no model loaded).")
         else:
             model = artifacts["models"][chosen_model]
-            if scaler_choice != "(auto)":
-                scaler = artifacts["scalers"].get(scaler_choice)
-            else:
-                scaler = next(iter(artifacts["scalers"].values()), None)
-
+            scaler = pick_scaler(model, artifacts["scalers"], chosen_model)
             exp_cols = expected_features(scaler, model)
             features = build_feature_row(raw_inputs, exp_cols)
             try:
-                _, probability = run_prediction(model, scaler, features)
+                result = run_prediction(model, scaler, features)
             except Exception as exc:
                 st.error(
                     "Prediction failed — the input columns could not be aligned "
                     f"to the model's expected features.\n\n**Details:** {exc}\n\n"
-                    "This usually means the model was trained on columns the app "
-                    "can't reconstruct from the sidebar inputs. See the *Model "
-                    "Info* tab for the exact feature list your model expects."
+                    "See the *Model Info* tab for the exact feature list this "
+                    "model expects."
                 )
                 st.stop()
 
         st.subheader("Prediction Result")
-        m1, m2 = st.columns([2, 1])
-        with m1:
-            if probability > 0.50:
-                st.error(
-                    f"⚠️ **High risk of cancellation** — "
-                    f"probability **{probability * 100:.1f}%**"
-                )
+
+        if result["kind"] == "regressor":
+            value = result["value"]
+            label = "Predicted ADR (price per night)" if purpose == "price" \
+                else "Predicted value"
+            st.metric(label, f"{value:,.2f}")
+            st.caption(
+                "Regression output. Note: for an accurate figure the model uses "
+                "all ~220 training features; fields you didn't set default to 0."
+            )
+        else:
+            proba = result["proba"]
+            if purpose == "upsell":
+                pos, neg = "Likely to upsell", "Unlikely to upsell"
             else:
-                st.success(
-                    f"✅ **Likely to check in** — cancellation probability "
-                    f"**{probability * 100:.1f}%**"
-                )
-            st.progress(probability)
-        with m2:
-            st.metric("Cancellation probability", f"{probability * 100:.1f}%")
+                pos, neg = "High risk of cancellation", "Likely to check in"
+            m1, m2 = st.columns([2, 1])
+            with m1:
+                if proba > 0.50:
+                    st.error(f"⚠️ **{pos}** — probability **{proba * 100:.1f}%**")
+                else:
+                    st.success(f"✅ **{neg}** — probability **{proba * 100:.1f}%**")
+                st.progress(proba)
+            with m2:
+                st.metric("Positive-class probability", f"{proba * 100:.1f}%")
 
         with st.expander("Show inputs sent to the model"):
             st.json(raw_inputs)
