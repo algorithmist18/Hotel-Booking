@@ -51,6 +51,29 @@ sidebar inputs to the exact one-hot columns your `pd.get_dummies()` produced —
 no manual column-mapping needed. Until models are present, the app runs in a
 clearly-labelled demo mode instead of crashing.
 
+## 🤖 AI Advisor (agent workflow)
+
+The **AI Advisor** tab turns the ML predictions into a revenue action plan using
+two sequential agents. The models produce a compact forecast summary, and the
+agents reason over *that* — never the raw data.
+
+```mermaid
+flowchart LR
+    ML[ML models<br/>cancellation + pricing] --> F[Forecast summary<br/>cancel rate · ADR · revenue]
+    F --> A1[Agent 1 · Data Analyst<br/>→ risk &amp; opportunity briefing]
+    A1 --> A2[Agent 2 · Revenue Manager<br/>→ pricing &amp; overbooking plan]
+    A2 --> R[Action plan<br/>rendered in the app]
+```
+
+- **Providers:** OpenAI · Groq · Gemini · Anthropic — pick one in the tab; supply
+  the key via a local `.env` or Streamlit **Secrets** on Cloud.
+- **Engine:** a built-in, dependency-free engine (default) makes the two LLM
+  calls directly; ticking *Use the CrewAI framework* runs the same flow via
+  CrewAI.
+
+📄 Full pipeline + sequence diagram, agent specs, and code map:
+**[`docs/agent_workflow.md`](docs/agent_workflow.md)**.
+
 ## 🖥️ Run locally
 
 ```bash
