@@ -31,6 +31,7 @@ from __future__ import annotations
 import datetime as _dt
 import glob
 import os
+import random
 import zipfile
 from pathlib import Path
 
@@ -53,6 +54,11 @@ DATA_CANDIDATES = [
     APP_DIR / "hotel_bookings.csv",
     APP_DIR / "hotel_booking.csv",
     APP_DIR / "data" / "hotel_bookings.csv",
+]
+TEST_DATA_CANDIDATES = [
+    APP_DIR / "app_test_data.csv",
+    APP_DIR / "test_data.csv",
+    APP_DIR / "data" / "app_test_data.csv",
 ]
 
 # Keywords used to auto-classify loaded objects.
@@ -174,6 +180,49 @@ def load_dataset() -> pd.DataFrame | None:
     return None
 
 
+@st.cache_data(show_spinner=False)
+def load_test_data() -> pd.DataFrame | None:
+    """Load the held-out test rows the user can pick from and run predictions on.
+
+    Rows are raw (un-encoded) booking records — the same feature space the
+    sidebar collects — so any row can flow straight through ``build_feature_row``.
+    """
+    for candidate in TEST_DATA_CANDIDATES:
+        if candidate.exists():
+            try:
+                df = pd.read_csv(candidate)
+                # NaNs in agent/children/country etc. break encoding/scaling.
+                num = df.select_dtypes(include="number").columns
+                df[num] = df[num].fillna(0)
+                obj = df.select_dtypes(exclude="number").columns
+                df[obj] = df[obj].fillna("Undefined")
+                return df
+            except Exception:
+                return None
+    return None
+
+
+def row_to_raw(row: pd.Series) -> dict:
+    """Convert a raw test-data row into the input dict ``build_feature_row`` uses.
+
+    The test CSV's columns already match the model feature space, so this is
+    largely a passthrough; it just coerces obvious integer-like fields.
+    """
+    raw = row.to_dict()
+    for key in ("is_repeated_guest", "is_canceled", "adults", "children",
+                "babies", "total_of_special_requests", "booking_changes",
+                "previous_cancellations", "previous_bookings_not_canceled",
+                "required_car_parking_spaces", "days_in_waiting_list",
+                "arrival_date_year", "arrival_date_week_number",
+                "arrival_date_day_of_month"):
+        if key in raw and pd.notna(raw[key]):
+            try:
+                raw[key] = int(raw[key])
+            except (TypeError, ValueError):
+                pass
+    return raw
+
+
 def expected_features(scaler, model) -> list[str] | None:
     """Return the ordered feature names the pipeline expects, or ``None``.
 
@@ -188,20 +237,35 @@ def expected_features(scaler, model) -> list[str] | None:
     return None
 
 
+def is_tree_based(model) -> bool:
+    """True for scale-invariant tree/ensemble models (which must NOT be scaled).
+
+    The tree models here were trained on raw, unscaled features; applying the
+    StandardScaler to them badly degrades accuracy. Only scale-sensitive models
+    (LogisticRegression, SVM, KNN, …) should receive the scaler.
+    """
+    name = type(model).__name__.lower()
+    return any(k in name for k in (
+        "forest", "tree", "boost", "xgb", "lgbm", "lightgbm", "catboost",
+        "bagging",
+    ))
+
+
 def pick_scaler(model, scalers: dict, model_name: str = ""):
     """Choose the scaler that matches this model, or ``None``.
 
     Different model families here have different feature spaces (cancellation vs
-    upsell vs pricing).
+    upsell vs pricing) *and* different scaling needs.
 
-    1. If the model carries ``feature_names_in_`` (trees, RF), pair it with the
-       scaler whose columns overlap ~completely — otherwise scale nothing (the
-       right choice for the tree pricing regressor trained unscaled).
+    0. Tree/ensemble models are scale-invariant and were trained unscaled → never
+       scale them (see ``is_tree_based``).
+    1. If the model carries ``feature_names_in_``, pair it with the scaler whose
+       column set matches exactly — otherwise scale nothing.
     2. If the model has *no* feature names (e.g. LogisticRegression trained on a
        scaled array), fall back to matching by feature count, disambiguating by
        name family (``upsell`` vs cancellation ``base``).
     """
-    if not scalers:
+    if not scalers or is_tree_based(model):
         return None
 
     if hasattr(model, "feature_names_in_"):
@@ -460,11 +524,21 @@ def _model_purpose(name: str) -> str:
     return "cancellation"       # default → cancellation risk
 
 
+def _true_target(row: pd.Series, purpose: str):
+    """Extract the ground-truth value from a test row for the given purpose."""
+    if purpose == "price" and "adr" in row:
+        return float(row["adr"])
+    if purpose == "upsell" and "total_of_special_requests" in row:
+        return int(row["total_of_special_requests"]) > 0
+    if "is_canceled" in row:
+        return int(row["is_canceled"])
+    return None
+
+
 # ---- Predict tab ---------------------------------------------------------- #
 with predict_tab:
-    raw_inputs = collect_raw_inputs(country_codes(artifacts))
-
     model_names = list(artifacts["models"].keys())
+    test_df = load_test_data()
 
     if not model_names:
         st.warning(
@@ -478,6 +552,44 @@ with predict_tab:
         )
         st.divider()
 
+    # --- Input source: a test-data row, or manual entry ---------------------
+    default_source = "🎲 Test data row" if test_df is not None else "✍️ Manual input"
+    source = st.radio(
+        "Input source", ["🎲 Test data row", "✍️ Manual input"],
+        horizontal=True,
+        index=0 if default_source.startswith("🎲") else 1,
+    )
+
+    selected_row = None
+    if source.startswith("🎲"):
+        if test_df is None:
+            st.warning(
+                "No test data found. Add **`app_test_data.csv`** to the repo "
+                "root (raw booking rows) to enable this. Falling back to manual "
+                "input below."
+            )
+            raw_inputs = collect_raw_inputs(country_codes(artifacts))
+        else:
+            n_rows = len(test_df)
+            st.session_state.setdefault("test_row_idx", random.randint(0, n_rows - 1))
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                if st.button("🎲 Pick a random row", use_container_width=True):
+                    st.session_state["test_row_idx"] = random.randint(0, n_rows - 1)
+            with c2:
+                st.number_input(
+                    f"…or choose a row (0–{n_rows - 1})", min_value=0,
+                    max_value=n_rows - 1, step=1, key="test_row_idx",
+                )
+            idx = int(st.session_state["test_row_idx"])
+            selected_row = test_df.iloc[idx]
+            st.caption(f"Selected **row {idx}** of {n_rows:,} test bookings:")
+            st.dataframe(selected_row.to_frame().T, use_container_width=True)
+            raw_inputs = row_to_raw(selected_row)
+    else:
+        raw_inputs = collect_raw_inputs(country_codes(artifacts))
+
+    st.divider()
     chosen_model = st.selectbox(
         "Model", model_names or ["(demo — no model loaded)"],
         help="Pick which trained estimator to run. The matching scaler is "
@@ -558,6 +670,31 @@ with predict_tab:
                 st.progress(proba)
             with m2:
                 st.metric("Positive-class probability", f"{proba * 100:.1f}%")
+
+        # For a test row, compare the prediction against the ground truth.
+        if selected_row is not None:
+            truth = _true_target(selected_row, purpose)
+            if truth is not None:
+                st.markdown("**Actual vs. predicted** (ground truth from test data)")
+                a, b = st.columns(2)
+                if result["kind"] == "regressor":
+                    pred_v = result["value"]
+                    a.metric("Actual ADR", f"{float(truth):,.2f}")
+                    b.metric("Predicted ADR", f"{pred_v:,.2f}",
+                             delta=f"{pred_v - float(truth):,.2f}")
+                else:
+                    if purpose == "upsell":
+                        actual_txt = "Upsell" if truth else "No upsell"
+                        pred_txt = "Upsell" if result["label"] else "No upsell"
+                    else:
+                        actual_txt = "Cancelled" if truth else "Not cancelled"
+                        pred_txt = "Cancelled" if result["label"] else "Not cancelled"
+                    a.metric("Actual", actual_txt)
+                    b.metric("Predicted", pred_txt)
+                    if int(bool(truth)) == int(result["label"]):
+                        st.success("✅ Prediction matches the actual outcome.")
+                    else:
+                        st.warning("❌ Prediction differs from the actual outcome.")
 
         with st.expander("Show inputs sent to the model"):
             st.json(raw_inputs)
