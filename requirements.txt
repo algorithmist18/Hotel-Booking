@@ -7,6 +7,7 @@ matplotlib
 seaborn
 
 # AI Advisor tab (CrewAI agents + Gemini). Heavy; pulls in litellm.
-# Remove these two lines if you don't want the AI Advisor on Streamlit Cloud.
+# Remove these lines if you don't want the AI Advisor on Streamlit Cloud.
 crewai>=0.80
 google-generativeai
+python-dotenv

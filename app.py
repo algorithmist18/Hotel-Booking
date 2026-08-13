@@ -44,6 +44,15 @@ try:
 except Exception:  # pragma: no cover - joblib is in requirements.txt
     joblib = None
 
+# Load a local .env (if present) so GEMINI_API_KEY and friends land in the
+# environment without any UI. Safe no-op when python-dotenv isn't installed or
+# there is no .env file (e.g. on Streamlit Cloud, where Secrets are used).
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:  # pragma: no cover
+    pass
+
 
 # --------------------------------------------------------------------------- #
 # Paths / constants
@@ -873,13 +882,15 @@ with advisor_tab:
     key_col, model_col, n_col = st.columns([2, 1, 1])
     with key_col:
         if secret_key or env_key:
-            st.success("Gemini API key found in secrets/environment ✅")
+            src = "secrets" if secret_key else ".env / environment"
+            st.success(f"Gemini API key found in {src} ✅")
             api_key = secret_key or env_key
         else:
             api_key = st.text_input(
                 "Gemini API key", type="password",
-                help="Stored only for this session. On Streamlit Cloud, add "
-                     "GEMINI_API_KEY under Settings → Secrets instead.",
+                help="Local: put GEMINI_API_KEY in a .env file (auto-loaded, "
+                     "gitignored). On Streamlit Cloud: add it under "
+                     "Settings → Secrets. This field is a session-only fallback.",
             )
     with model_col:
         gemini_model = st.selectbox(

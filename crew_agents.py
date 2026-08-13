@@ -23,6 +23,14 @@ from __future__ import annotations
 
 import os
 
+# Pick up a local .env (GEMINI_API_KEY=...) with no UI. No-op if python-dotenv
+# or the file is absent.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:  # pragma: no cover
+    pass
+
 # Default Gemini model — the active 2.5 line (1.5 is deprecated).
 DEFAULT_LLM = "gemini/gemini-2.5-flash"
 
