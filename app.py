@@ -509,8 +509,8 @@ st.markdown(
 artifacts = load_artifacts()
 dataset = load_dataset()
 
-predict_tab, data_tab, models_tab = st.tabs(
-    ["🔮 Predict", "📊 Data & EDA", "🧠 Model Info"]
+predict_tab, data_tab, models_tab, advisor_tab = st.tabs(
+    ["🔮 Predict", "📊 Data & EDA", "🧠 Model Info", "🤖 AI Advisor"]
 )
 
 
@@ -533,6 +533,71 @@ def _true_target(row: pd.Series, purpose: str):
     if "is_canceled" in row:
         return int(row["is_canceled"])
     return None
+
+
+def _find_model(artifacts: dict, purpose: str, prefer: str = "") -> str | None:
+    """Pick a loaded model of a given purpose, preferring a name substring."""
+    names = [n for n in artifacts["models"] if _model_purpose(n) == purpose]
+    if not names:
+        return None
+    for n in names:
+        if prefer and prefer in n:
+            return n
+    return names[0]
+
+
+def summarize_forecast(artifacts: dict, test_df: pd.DataFrame,
+                       n: int = 50, seed: int = 42) -> str:
+    """Run the ML models over a sample of bookings and describe the week.
+
+    Produces the plain-text forecast the CrewAI agents reason over: predicted
+    cancellation rate, expected check-ins, high-risk exposure, and the pricing
+    model's average predicted ADR / projected revenue.
+    """
+    sample = test_df.sample(min(n, len(test_df)), random_state=seed)
+
+    cx_name = _find_model(artifacts, "cancellation", prefer="optimized_rf")
+    price_name = _find_model(artifacts, "price")
+
+    lines = [f"Sample size: {len(sample)} upcoming bookings."]
+
+    if cx_name:
+        model = artifacts["models"][cx_name]
+        scaler = pick_scaler(model, artifacts["scalers"], cx_name)
+        exp = expected_features(scaler, model)
+        probs = []
+        for _, row in sample.iterrows():
+            feats = build_feature_row(row_to_raw(row), exp)
+            res = run_prediction(model, scaler, feats)
+            probs.append(res.get("proba", float(res.get("label", 0))))
+        probs = np.array(probs)
+        cancel_rate = float((probs > 0.5).mean())
+        high_risk = int((probs > 0.7).sum())
+        lines += [
+            f"Cancellation model: {cx_name}",
+            f"Predicted cancellation rate: {cancel_rate * 100:.1f}%",
+            f"Expected check-ins: {int(round((1 - cancel_rate) * len(sample)))} "
+            f"of {len(sample)}",
+            f"High-risk bookings (>70% cancel prob): {high_risk}",
+        ]
+
+    if price_name:
+        model = artifacts["models"][price_name]
+        scaler = pick_scaler(model, artifacts["scalers"], price_name)
+        exp = expected_features(scaler, model)
+        adrs = []
+        for _, row in sample.iterrows():
+            feats = build_feature_row(row_to_raw(row), exp)
+            adrs.append(run_prediction(model, scaler, feats)["value"])
+        adrs = np.array(adrs)
+        lines += [
+            f"Pricing model: {price_name}",
+            f"Average predicted ADR: {adrs.mean():.2f}",
+            f"ADR range: {adrs.min():.2f} - {adrs.max():.2f}",
+            f"Projected room revenue (ADR sum): {adrs.sum():,.0f}",
+        ]
+
+    return "\n".join(lines)
 
 
 # ---- Predict tab ---------------------------------------------------------- #
@@ -771,6 +836,85 @@ with models_tab:
         "trained on a NumPy array, retrain/export on a DataFrame so column order "
         "is preserved."
     )
+
+
+# ---- AI Advisor tab ------------------------------------------------------- #
+with advisor_tab:
+    st.subheader("🤖 AI Revenue Advisor")
+    st.markdown(
+        "Two **CrewAI** agents powered by **Gemini** turn this week's ML forecast "
+        "into an action plan:\n"
+        "1. **Senior Hotel Data Analyst** — reads the model outputs and briefs the "
+        "risks & opportunities.\n"
+        "2. **Director of Revenue Management** — converts that into concrete "
+        "pricing & overbooking actions."
+    )
+
+    import crew_agents
+
+    ok, err = crew_agents.crewai_available()
+    if not ok:
+        st.warning(
+            "CrewAI isn't installed in this environment, so the crew can't run "
+            "here. It's listed in `requirements.txt`, so Streamlit Cloud will "
+            "install it on deploy. To run locally:\n\n"
+            "```bash\npip install crewai\n```\n\n"
+            f"_Import error: {err}_"
+        )
+
+    # --- API key: prefer Streamlit secrets, else a password field -----------
+    secret_key = ""
+    try:
+        secret_key = st.secrets.get("GEMINI_API_KEY", "")
+    except Exception:
+        secret_key = ""
+    env_key = os.environ.get("GEMINI_API_KEY", "")
+
+    key_col, model_col, n_col = st.columns([2, 1, 1])
+    with key_col:
+        if secret_key or env_key:
+            st.success("Gemini API key found in secrets/environment ✅")
+            api_key = secret_key or env_key
+        else:
+            api_key = st.text_input(
+                "Gemini API key", type="password",
+                help="Stored only for this session. On Streamlit Cloud, add "
+                     "GEMINI_API_KEY under Settings → Secrets instead.",
+            )
+    with model_col:
+        gemini_model = st.selectbox(
+            "Gemini model",
+            ["gemini/gemini-2.5-flash", "gemini/gemini-2.5-pro"],
+        )
+    with n_col:
+        sample_n = st.number_input("Bookings to forecast", 10, 500, 50, step=10)
+
+    advisor_test_df = load_test_data()
+    if advisor_test_df is None:
+        st.info("Add `app_test_data.csv` to generate a forecast for the agents.")
+    can_run = ok and bool(api_key) and advisor_test_df is not None and bool(model_names)
+
+    if st.button("Generate AI strategy report", type="primary",
+                 disabled=not can_run, use_container_width=True):
+        with st.spinner("Building forecast from the ML models…"):
+            context = summarize_forecast(artifacts, advisor_test_df, n=int(sample_n))
+        with st.expander("Forecast handed to the agents", expanded=True):
+            st.code(context)
+        try:
+            with st.spinner(f"Agents deliberating via {gemini_model}… "
+                            "(this can take ~30-60s)"):
+                report = crew_agents.run_advisor(
+                    context, api_key=api_key, llm=gemini_model, verbose=False
+                )
+            st.markdown("### 📋 Revenue action plan")
+            st.markdown(report)
+        except Exception as exc:
+            st.error(
+                "The crew failed to produce a report.\n\n"
+                f"**Details:** {exc}\n\n"
+                "Common causes: an invalid/expired Gemini API key, no quota, or "
+                "no network egress to Google from the deploy environment."
+            )
 
 
 # --------------------------------------------------------------------------- #
