@@ -7,6 +7,7 @@ correct amount of staff — served as an interactive **Streamlit** web app.
 
 **Public URL:** https://hotel-booking-kwxxky4hnhdup4pn5ho5at.streamlit.app/
 **YouTube link:** https://www.youtube.com/watch?v=TxzAIx7dhRA
+**Github link:** https://github.com/algorithmist18/Hotel-Booking/blob/claude/hotel-booking-streamlit-app-jqil18/README.md
 
 The app (`app.py`) predicts the probability that a hotel booking is cancelled,
 using your trained scikit-learn models. It also has a data-exploration tab and a
